@@ -15,21 +15,89 @@ const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || "http://localhost:808
 const NEO4J_HTTP_URL = process.env.NEO4J_HTTP_URL || "http://localhost:7474";
 const NEO4J_USER = process.env.NEO4J_USER || "neo4j";
 const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD || "devpassword";
+// WBS-PS3: Health cache configuration
+const HEALTH_CACHE_TTL_MS = 10000; // Cache health status for 10 seconds
+let healthCacheTime = 0; // Last time health was cached
+let cachedHealthResponse = null;
 const serviceHealth = {
-    "ai-agents": { url: AI_AGENTS_URL, healthy: false, lastCheck: 0, consecutiveFailures: 0 },
-    "inference-service": { url: INFERENCE_SERVICE_URL, healthy: false, lastCheck: 0, consecutiveFailures: 0 },
-    "llm-gateway": { url: LLM_GATEWAY_URL, healthy: false, lastCheck: 0, consecutiveFailures: 0 },
-    "semantic-search": { url: SEMANTIC_SEARCH_URL, healthy: false, lastCheck: 0, consecutiveFailures: 0 },
-    "code-orchestrator": { url: CODE_ORCHESTRATOR_URL, healthy: false, lastCheck: 0, consecutiveFailures: 0 },
-    "audit-service": { url: AUDIT_SERVICE_URL, healthy: false, lastCheck: 0, consecutiveFailures: 0 },
+    "ai-agents": {
+        url: AI_AGENTS_URL,
+        healthy: false,
+        lastCheck: 0,
+        consecutiveFailures: 0,
+        lastSuccessTime: 0,
+        totalRequests: 0,
+        totalErrors: 0,
+        errorRate: 0,
+        avgResponseTimeMs: 0,
+    },
+    "inference-service": {
+        url: INFERENCE_SERVICE_URL,
+        healthy: false,
+        lastCheck: 0,
+        consecutiveFailures: 0,
+        lastSuccessTime: 0,
+        totalRequests: 0,
+        totalErrors: 0,
+        errorRate: 0,
+        avgResponseTimeMs: 0,
+    },
+    "llm-gateway": {
+        url: LLM_GATEWAY_URL,
+        healthy: false,
+        lastCheck: 0,
+        consecutiveFailures: 0,
+        lastSuccessTime: 0,
+        totalRequests: 0,
+        totalErrors: 0,
+        errorRate: 0,
+        avgResponseTimeMs: 0,
+    },
+    "semantic-search": {
+        url: SEMANTIC_SEARCH_URL,
+        healthy: false,
+        lastCheck: 0,
+        consecutiveFailures: 0,
+        lastSuccessTime: 0,
+        totalRequests: 0,
+        totalErrors: 0,
+        errorRate: 0,
+        avgResponseTimeMs: 0,
+    },
+    "code-orchestrator": {
+        url: CODE_ORCHESTRATOR_URL,
+        healthy: false,
+        lastCheck: 0,
+        consecutiveFailures: 0,
+        lastSuccessTime: 0,
+        totalRequests: 0,
+        totalErrors: 0,
+        errorRate: 0,
+        avgResponseTimeMs: 0,
+    },
+    "audit-service": {
+        url: AUDIT_SERVICE_URL,
+        healthy: false,
+        lastCheck: 0,
+        consecutiveFailures: 0,
+        lastSuccessTime: 0,
+        totalRequests: 0,
+        totalErrors: 0,
+        errorRate: 0,
+        avgResponseTimeMs: 0,
+    },
 };
 const HEALTH_CHECK_INTERVAL_MS = 5000; // Check every 5 seconds when unhealthy
 const HEALTH_CHECK_INTERVAL_HEALTHY_MS = 30000; // Check every 30 seconds when healthy
 let healthCheckTimer = null;
+// WBS-PS3: Rolling average window for response times
+const ROLLING_AVERAGE_ALPHA = 0.2; // Exponential moving average factor
 async function checkServiceHealth(serviceName) {
     const service = serviceHealth[serviceName];
     if (!service)
         return false;
+    const startTime = Date.now();
+    service.totalRequests++;
     try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
@@ -38,20 +106,45 @@ async function checkServiceHealth(serviceName) {
             signal: controller.signal,
         });
         clearTimeout(timeout);
+        const responseTime = Date.now() - startTime;
         const wasHealthy = service.healthy;
         service.healthy = response.ok;
         service.lastCheck = Date.now();
         service.consecutiveFailures = 0;
         delete service.lastError;
+        // WBS-PS3: Track success metrics
+        if (response.ok) {
+            service.lastSuccessTime = Date.now();
+            service.responseTimeMs = responseTime;
+            // Exponential moving average for response time
+            service.avgResponseTimeMs = service.avgResponseTimeMs === 0
+                ? responseTime
+                : service.avgResponseTimeMs * (1 - ROLLING_AVERAGE_ALPHA) + responseTime * ROLLING_AVERAGE_ALPHA;
+            // Try to parse health details from response
+            try {
+                const healthData = await response.json();
+                service.healthDetails = healthData;
+            }
+            catch {
+                // Response might not be JSON, that's okay
+                service.healthDetails = { raw: "ok" };
+            }
+        }
+        // Update error rate (rolling)
+        service.errorRate = service.totalErrors / service.totalRequests;
         if (!wasHealthy && service.healthy) {
-            console.error(`✅ ${serviceName} is now ONLINE at ${service.url}`);
+            console.error(`✅ ${serviceName} is now ONLINE at ${service.url} (${responseTime}ms)`);
         }
         return service.healthy;
     }
     catch (error) {
+        const responseTime = Date.now() - startTime;
         service.healthy = false;
         service.lastCheck = Date.now();
         service.consecutiveFailures++;
+        service.totalErrors++;
+        service.errorRate = service.totalErrors / service.totalRequests;
+        service.responseTimeMs = responseTime;
         service.lastError = error instanceof Error ? error.message : String(error);
         // Only log every 10th failure to reduce noise
         if (service.consecutiveFailures === 1 || service.consecutiveFailures % 10 === 0) {
@@ -97,6 +190,79 @@ function getServiceStatus() {
         };
     }
     return status;
+}
+// WBS-PS3: Build structured health response with all metrics
+function buildStructuredHealthResponse(fromCache = false) {
+    const now = Date.now();
+    const services = {};
+    let healthyCount = 0;
+    const totalCount = Object.keys(serviceHealth).length;
+    for (const [name, health] of Object.entries(serviceHealth)) {
+        if (health.healthy)
+            healthyCount++;
+        services[name] = {
+            healthy: health.healthy,
+            url: health.url,
+            lastCheck: health.lastCheck > 0 ? new Date(health.lastCheck).toISOString() : "never",
+            lastSuccess: health.lastSuccessTime > 0 ? new Date(health.lastSuccessTime).toISOString() : null,
+            lastError: health.lastError,
+            consecutiveFailures: health.consecutiveFailures,
+            totalRequests: health.totalRequests,
+            totalErrors: health.totalErrors,
+            errorRate: `${(health.errorRate * 100).toFixed(2)}%`,
+            responseTimeMs: health.responseTimeMs,
+            avgResponseTimeMs: Math.round(health.avgResponseTimeMs),
+            healthDetails: health.healthDetails,
+        };
+    }
+    // Determine overall status
+    let status;
+    let message;
+    if (healthyCount === totalCount) {
+        status = "healthy";
+        message = "All services operational";
+    }
+    else if (healthyCount > 0) {
+        status = "degraded";
+        message = `${healthyCount}/${totalCount} services operational`;
+    }
+    else if (Object.values(serviceHealth).some(s => s.totalRequests > 0)) {
+        status = "unhealthy";
+        message = "All services unavailable";
+    }
+    else {
+        status = "waiting";
+        message = "Waiting for platform services to start...";
+    }
+    return {
+        status,
+        timestamp: new Date(now).toISOString(),
+        cached: fromCache,
+        cacheAgeMs: fromCache && healthCacheTime > 0 ? now - healthCacheTime : undefined,
+        summary: {
+            total: totalCount,
+            healthy: healthyCount,
+            unhealthy: totalCount - healthyCount,
+            healthPercentage: `${((healthyCount / totalCount) * 100).toFixed(1)}%`,
+        },
+        services,
+        message,
+        hint: healthyCount === 0 ? "Start the platform with: docker-compose up -d" : undefined,
+    };
+}
+// WBS-PS3: Get cached or fresh health response
+async function getStructuredHealthResponse() {
+    const now = Date.now();
+    // Return cached response if within TTL
+    if (cachedHealthResponse && (now - healthCacheTime) < HEALTH_CACHE_TTL_MS) {
+        return buildStructuredHealthResponse(true);
+    }
+    // Refresh health checks
+    await checkAllServices();
+    // Build and cache response
+    cachedHealthResponse = buildStructuredHealthResponse(false);
+    healthCacheTime = now;
+    return cachedHealthResponse;
 }
 function isServiceHealthy(serviceName) {
     return serviceHealth[serviceName]?.healthy ?? false;
@@ -157,7 +323,7 @@ async function buildToolsList() {
         // Core management tools
         {
             name: "ai_agents_health",
-            description: "Check health status of AI Agents service and all Kitchen Brigade dependencies",
+            description: "Check health status of AI Agents service and all Kitchen Brigade dependencies. Returns structured JSON with per-service details including: healthy/unhealthy status, last successful request timestamp, error counts/rates, response times, and cached health details. Health status is cached for 10 seconds to avoid hammering services.",
             inputSchema: {
                 type: "object",
                 properties: {},
@@ -584,16 +750,8 @@ async function buildToolsList() {
 async function executeTool(name, args) {
     // Core tools - always available even when services are down
     if (name === "ai_agents_health") {
-        const serviceStatus = getServiceStatus();
-        const anyHealthy = Object.values(serviceStatus).some((s) => s.healthy);
-        return {
-            status: anyHealthy ? "degraded" : "waiting",
-            message: anyHealthy
-                ? "Some services available"
-                : "Waiting for platform services to start...",
-            services: serviceStatus,
-            hint: anyHealthy ? undefined : "Start the platform with: docker-compose up -d",
-        };
+        // WBS-PS3: Return structured health response with caching
+        return await getStructuredHealthResponse();
     }
     if (name === "ai_agents_list_functions") {
         if (!isServiceHealthy("ai-agents")) {
@@ -864,14 +1022,13 @@ async function executeTool(name, args) {
     }
     // Textbook Search
     if (name === "textbook_search") {
-        const { query, books, top_k = 5, include_chapters = true, } = args;
-        // Route through semantic-search which indexes textbooks
+        const { query, books, top_k = 5, } = args;
+        // Route through semantic-search which indexes textbooks in 'chapters' collection
+        // Note: 'chapters' collection contains indexed book chapters from ai-platform-data
         return apiCall("/v1/search", "POST", {
             query,
-            collection: "textbooks",
-            filters: books ? { books } : undefined,
-            top_k,
-            include_chapters
+            collection: "chapters", // Collection name in Qdrant
+            limit: top_k, // API uses 'limit' not 'top_k'
         }, SEMANTIC_SEARCH_URL);
     }
     // Audit Generate Footnotes
@@ -918,7 +1075,8 @@ async function executeTool(name, args) {
                 .catch(err => ({ source: "neo4j", results: { error: String(err) } })));
         }
         if (sources.includes("textbooks")) {
-            searchPromises.push(apiCall("/v1/search", "POST", { query, collection: "textbooks", limit: top_k }, SEMANTIC_SEARCH_URL)
+            // Search 'chapters' collection which contains indexed book chapters from textbooks
+            searchPromises.push(apiCall("/v1/search", "POST", { query, collection: "chapters", limit: top_k }, SEMANTIC_SEARCH_URL)
                 .then(results => ({ source: "textbooks", results }))
                 .catch(err => ({ source: "textbooks", results: { error: String(err) } })));
         }
