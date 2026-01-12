@@ -817,11 +817,49 @@ async function executeTool(name, args) {
             };
         }
         const { protocol_id, inputs, config, brigade_override } = args;
+        // CRITICAL: Run preflight checks FIRST with short timeout (5s)
+        // This prevents long waits when inference-service or models are unavailable
+        console.error(`[PREFLIGHT] Checking prerequisites for protocol ${protocol_id}...`);
+        try {
+            const preflightResult = await apiCall(`/v1/protocols/${protocol_id}/preflight`, "POST", {
+                brigade_override,
+                enable_cross_reference: config?.run_cross_reference ?? true,
+            }, AI_AGENTS_URL, 5000 // 5 second timeout for preflight
+            );
+            console.error(`[PREFLIGHT] Complete in ${preflightResult.check_time_ms}ms - ready: ${preflightResult.ready}`);
+            if (!preflightResult.ready) {
+                // FAST FAIL - don't wait for protocol execution
+                console.error(`[PREFLIGHT] BLOCKED: ${preflightResult.blocking_issues.join(", ")}`);
+                return {
+                    error: "preflight_failed",
+                    status: "blocked",
+                    message: `Protocol cannot execute: ${preflightResult.blocking_issues.join("; ")}`,
+                    protocol_id,
+                    preflight: preflightResult,
+                    hint: preflightResult.blocking_issues.some((i) => i.includes("inference-service"))
+                        ? "Start inference-service: cd inference-service && source .venv/bin/activate && python -m uvicorn src.main:app --port 8085"
+                        : preflightResult.blocking_issues.some((i) => i.includes("not found"))
+                            ? "Required model not available in inference-service"
+                            : "Check service health with ai_agents_health tool",
+                };
+            }
+            // Log warnings but proceed
+            if (preflightResult.warnings.length > 0) {
+                console.error(`[PREFLIGHT] Warnings: ${preflightResult.warnings.join(", ")}`);
+            }
+        }
+        catch (preflightError) {
+            // Preflight failed - still try to run but log warning
+            console.error(`[PREFLIGHT] Check failed: ${preflightError}. Proceeding with caution...`);
+        }
+        // Preflight passed - now run protocol with longer timeout
+        console.error(`[PROTOCOL] Executing ${protocol_id}...`);
         return apiCall(`/v1/protocols/${protocol_id}/run`, "POST", {
             inputs,
             config,
             brigade_override,
-        });
+        }, AI_AGENTS_URL, 300000 // 5 minute timeout for actual protocol execution
+        );
     }
     // Dynamic function tools (ai_fn_*)
     if (name.startsWith("ai_fn_")) {
@@ -839,11 +877,31 @@ async function executeTool(name, args) {
             .toUpperCase()
             .replace(/_/g, "-");
         const { inputs, config, brigade_override } = args;
+        // CRITICAL: Run preflight checks FIRST
+        console.error(`[PREFLIGHT] Checking prerequisites for protocol ${protocolId}...`);
+        try {
+            const preflightResult = await apiCall(`/v1/protocols/${protocolId}/preflight`, "POST", {
+                brigade_override,
+                enable_cross_reference: config?.run_cross_reference ?? true,
+            }, AI_AGENTS_URL, 5000);
+            if (!preflightResult.ready) {
+                return {
+                    error: "preflight_failed",
+                    status: "blocked",
+                    message: `Protocol cannot execute: ${preflightResult.blocking_issues.join("; ")}`,
+                    protocol_id: protocolId,
+                    preflight: preflightResult,
+                };
+            }
+        }
+        catch (preflightError) {
+            console.error(`[PREFLIGHT] Check failed: ${preflightError}`);
+        }
         return apiCall(`/v1/protocols/${protocolId}/run`, "POST", {
             inputs,
             config,
             brigade_override,
-        });
+        }, AI_AGENTS_URL, 300000);
     }
     // LLM Complete with tiered fallback
     if (name === "llm_complete") {
