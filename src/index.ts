@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Server is deprecated in favor of McpServer, but McpServer requires significant refactoring
+// NOSONAR: Suppressing deprecation warning until migration to McpServer is complete
+// @ts-expect-error Server class deprecated but McpServer migration pending
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -277,8 +280,8 @@ function startHealthMonitor(): void {
 
   const runHealthCheck = async () => {
     const results = await checkAllServices();
-    const anyHealthy = Object.values(results).some((h) => h);
-    const allHealthy = Object.values(results).every((h) => h);
+    const anyHealthy = Object.values(results).some(Boolean);
+    const allHealthy = Object.values(results).every(Boolean);
 
     // Adjust check interval based on health state
     const interval = allHealthy ? HEALTH_CHECK_INTERVAL_HEALTHY_MS : HEALTH_CHECK_INTERVAL_MS;
@@ -876,7 +879,7 @@ async function buildToolsList(): Promise<Tool[]> {
           required: ["input"],
         };
     tools.push({
-      name: `ai_fn_${fn.name.replace(/-/g, "_")}`,
+      name: `ai_fn_${fn.name.replaceAll("-", "_")}`,
       description: fn.description || `Execute the ${fn.name} agent function`,
       inputSchema,
     });
@@ -885,7 +888,7 @@ async function buildToolsList(): Promise<Tool[]> {
   // Add dynamic protocol-specific tools
   for (const protocol of cachedProtocols) {
     tools.push({
-      name: `ai_protocol_${protocol.id.toLowerCase().replace(/-/g, "_")}`,
+      name: `ai_protocol_${protocol.id.toLowerCase().replaceAll("-", "_")}`,
       description:
         protocol.description || `Execute the ${protocol.name || protocol.id} Kitchen Brigade protocol`,
       inputSchema: {
@@ -919,672 +922,578 @@ async function buildToolsList(): Promise<Tool[]> {
   return tools;
 }
 
-// Tool execution handler
-async function executeTool(
-  name: string,
-  args: Record<string, unknown>
-): Promise<unknown> {
-  // Core tools - always available even when services are down
-  if (name === "ai_agents_health") {
-    // WBS-PS3: Return structured health response with caching
-    return await getStructuredHealthResponse();
-  }
+// =============================================================================
+// Tool Handlers - Each handler is a focused function to reduce complexity
+// =============================================================================
 
-  if (name === "ai_agents_list_functions") {
-    if (!isServiceHealthy("ai-agents")) {
-      return {
-        error: "ai-agents service not available",
-        status: "waiting",
-        message: "The ai-agents service is not running. Start the platform to use this tool.",
-        cached_functions: cachedFunctions.length > 0 ? cachedFunctions.map((f) => f.name) : undefined,
-      };
-    }
-    await refreshCache();
+async function handleHealthTool(): Promise<unknown> {
+  return await getStructuredHealthResponse();
+}
+
+async function handleListFunctions(): Promise<unknown> {
+  if (!isServiceHealthy("ai-agents")) {
     return {
-      functions: cachedFunctions.map((f) => ({
-        name: f.name,
-        description: f.description,
-      })),
-      count: cachedFunctions.length,
+      error: "ai-agents service not available",
+      status: "waiting",
+      message: "The ai-agents service is not running. Start the platform to use this tool.",
+      cached_functions: cachedFunctions.length > 0 ? cachedFunctions.map((f) => f.name) : undefined,
     };
   }
+  await refreshCache();
+  return {
+    functions: cachedFunctions.map((f) => ({
+      name: f.name,
+      description: f.description,
+    })),
+    count: cachedFunctions.length,
+  };
+}
 
-  if (name === "ai_agents_list_protocols") {
-    if (!isServiceHealthy("ai-agents")) {
-      return {
-        error: "ai-agents service not available",
-        status: "waiting",
-        message: "The ai-agents service is not running. Start the platform to use this tool.",
-        cached_protocols: cachedProtocols.length > 0 ? cachedProtocols.map((p) => p.id) : undefined,
-      };
-    }
-    await refreshCache();
+async function handleListProtocols(): Promise<unknown> {
+  if (!isServiceHealthy("ai-agents")) {
     return {
-      protocols: cachedProtocols.map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description,
-      })),
-      count: cachedProtocols.length,
+      error: "ai-agents service not available",
+      status: "waiting",
+      message: "The ai-agents service is not running. Start the platform to use this tool.",
+      cached_protocols: cachedProtocols.length > 0 ? cachedProtocols.map((p) => p.id) : undefined,
     };
   }
+  await refreshCache();
+  return {
+    protocols: cachedProtocols.map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: p.description,
+    })),
+    count: cachedProtocols.length,
+  };
+}
 
-  if (name === "ai_agents_run_function") {
-    if (!isServiceHealthy("ai-agents")) {
-      return {
-        error: "ai-agents service not available",
-        status: "waiting",
-        message: "Cannot execute functions - ai-agents service is not running.",
-        requested_function: args.function_name,
-        hint: "Start the platform with: docker-compose up -d",
-      };
-    }
-    const { function_name, input, preset } = args as {
-      function_name: string;
-      input: Record<string, unknown>;
-      preset?: string;
+async function handleRunFunction(args: Record<string, unknown>): Promise<unknown> {
+  if (!isServiceHealthy("ai-agents")) {
+    return {
+      error: "ai-agents service not available",
+      status: "waiting",
+      message: "Cannot execute functions - ai-agents service is not running.",
+      requested_function: args.function_name,
+      hint: "Start the platform with: docker-compose up -d",
     };
-    return apiCall(`/v1/functions/${function_name}/run`, "POST", {
-      input,
-      preset,
-    });
   }
+  const { function_name, input, preset } = args as {
+    function_name: string;
+    input: Record<string, unknown>;
+    preset?: string;
+  };
+  return apiCall(`/v1/functions/${function_name}/run`, "POST", { input, preset });
+}
 
-  if (name === "ai_agents_run_protocol") {
-    if (!isServiceHealthy("ai-agents")) {
-      return {
-        error: "ai-agents service not available",
-        status: "waiting",
-        message: "Cannot execute protocols - ai-agents service is not running.",
-        requested_protocol: args.protocol_id,
-        hint: "Start the platform with: docker-compose up -d",
-      };
-    }
-    const { protocol_id, inputs, config, brigade_override } = args as {
-      protocol_id: string;
-      inputs: Record<string, unknown>;
-      config?: Record<string, unknown>;
-      brigade_override?: Record<string, unknown>;
-    };
-    
-    // CRITICAL: Run preflight checks FIRST with short timeout (5s)
-    // This prevents long waits when inference-service or models are unavailable
-    logTool(`🔍 [PREFLIGHT] Checking prerequisites for protocol ${protocol_id}...`);
-    try {
-      const preflightResult = await apiCall<{
-        ready: boolean;
-        blocking_issues: string[];
-        warnings: string[];
-        services: Array<{ name: string; healthy: boolean; error?: string }>;
-        models: Array<{ model_id: string; status: string; required_by: string[] }>;
-        check_time_ms: number;
-      }>(
-        `/v1/protocols/${protocol_id}/preflight`,
-        "POST",
-        {
-          brigade_override,
-          enable_cross_reference: config?.run_cross_reference ?? true,
-        },
-        AI_AGENTS_URL,
-        5000 // 5 second timeout for preflight
-      );
-      
-      logTool(`✓ [PREFLIGHT] Complete in ${preflightResult.check_time_ms}ms - ready: ${preflightResult.ready}`);
-      
-      if (!preflightResult.ready) {
-        // FAST FAIL - don't wait for protocol execution
-        logError(`🚫 [PREFLIGHT] BLOCKED: ${preflightResult.blocking_issues.join(", ")}`);
-        return {
-          error: "preflight_failed",
-          status: "blocked",
-          message: `Protocol cannot execute: ${preflightResult.blocking_issues.join("; ")}`,
-          protocol_id,
-          preflight: preflightResult,
-          hint: preflightResult.blocking_issues.some((i: string) => i.includes("inference-service"))
-            ? "Start inference-service: cd inference-service && source .venv/bin/activate && python -m uvicorn src.main:app --port 8085"
-            : preflightResult.blocking_issues.some((i: string) => i.includes("not found"))
-            ? "Required model not available in inference-service"
-            : "Check service health with ai_agents_health tool",
-        };
-      }
-      
-      // Log warnings but proceed
-      if (preflightResult.warnings.length > 0) {
-        logTool(`⚠️ [PREFLIGHT] Warnings: ${preflightResult.warnings.join(", ")}`);
-      }
-    } catch (preflightError) {
-      // Preflight failed - still try to run but log warning
-      logError(`⚠️ [PREFLIGHT] Check failed: ${preflightError}. Proceeding with caution...`);
-    }
-    
-    // Preflight passed - now run protocol with longer timeout
-    logTool(`🚀 [PROTOCOL] Executing ${protocol_id}...`);
-    return apiCall(
-      `/v1/protocols/${protocol_id}/run`,
+// Helper to get preflight hint message
+function getPreflightHint(blockingIssues: string[]): string {
+  if (blockingIssues.some((i: string) => i.includes("inference-service"))) {
+    return "Start inference-service: cd inference-service && source .venv/bin/activate && python -m uvicorn src.main:app --port 8085";
+  }
+  if (blockingIssues.some((i: string) => i.includes("not found"))) {
+    return "Required model not available in inference-service";
+  }
+  return "Check service health with ai_agents_health tool";
+}
+
+// Helper to run preflight check
+async function runPreflightCheck(
+  protocolId: string,
+  brigadeOverride: Record<string, unknown> | undefined,
+  enableCrossReference: boolean
+): Promise<{ ready: boolean; result?: unknown }> {
+  try {
+    const preflightResult = await apiCall<{
+      ready: boolean;
+      blocking_issues: string[];
+      warnings: string[];
+      services?: Array<{ name: string; healthy: boolean; error?: string }>;
+      models?: Array<{ model_id: string; status: string; required_by: string[] }>;
+      check_time_ms: number;
+    }>(
+      `/v1/protocols/${protocolId}/preflight`,
       "POST",
-      {
-        inputs,
-        config,
-        brigade_override,
-      },
+      { brigade_override: brigadeOverride, enable_cross_reference: enableCrossReference },
       AI_AGENTS_URL,
-      300000 // 5 minute timeout for actual protocol execution
+      5000
     );
-  }
-
-  // Dynamic function tools (ai_fn_*)
-  if (name.startsWith("ai_fn_")) {
-    const fnName = name.replace("ai_fn_", "").replace(/_/g, "-");
-    const { input, preset, ...rest } = args as {
-      input?: Record<string, unknown>;
-      preset?: string;
-    };
-    return apiCall(`/v1/functions/${fnName}/run`, "POST", {
-      input: input || rest,
-      preset,
-    });
-  }
-
-  // Dynamic protocol tools (ai_protocol_*)
-  if (name.startsWith("ai_protocol_")) {
-    const protocolId = name
-      .replace("ai_protocol_", "")
-      .toUpperCase()
-      .replace(/_/g, "-");
-    const { inputs, config, brigade_override } = args as {
-      inputs: Record<string, unknown>;
-      config?: Record<string, unknown>;
-      brigade_override?: Record<string, unknown>;
-    };
     
-    // CRITICAL: Run preflight checks FIRST
-    console.error(`[PREFLIGHT] Checking prerequisites for protocol ${protocolId}...`);
-    try {
-      const preflightResult = await apiCall<{
-        ready: boolean;
-        blocking_issues: string[];
-        warnings: string[];
-        check_time_ms: number;
-      }>(
-        `/v1/protocols/${protocolId}/preflight`,
-        "POST",
-        {
-          brigade_override,
-          enable_cross_reference: config?.run_cross_reference ?? true,
-        },
-        AI_AGENTS_URL,
-        5000
-      );
-      
-      if (!preflightResult.ready) {
-        return {
+    logTool(`✓ [PREFLIGHT] Complete in ${preflightResult.check_time_ms}ms - ready: ${preflightResult.ready}`);
+    
+    if (!preflightResult.ready) {
+      logError(`🚫 [PREFLIGHT] BLOCKED: ${preflightResult.blocking_issues.join(", ")}`);
+      return {
+        ready: false,
+        result: {
           error: "preflight_failed",
           status: "blocked",
           message: `Protocol cannot execute: ${preflightResult.blocking_issues.join("; ")}`,
           protocol_id: protocolId,
           preflight: preflightResult,
-        };
-      }
-    } catch (preflightError) {
-      console.error(`[PREFLIGHT] Check failed: ${preflightError}`);
+          hint: getPreflightHint(preflightResult.blocking_issues),
+        },
+      };
     }
     
-    return apiCall(
-      `/v1/protocols/${protocolId}/run`,
+    if (preflightResult.warnings.length > 0) {
+      logTool(`⚠️ [PREFLIGHT] Warnings: ${preflightResult.warnings.join(", ")}`);
+    }
+    return { ready: true };
+  } catch (preflightError) {
+    logError(`⚠️ [PREFLIGHT] Check failed: ${preflightError}. Proceeding with caution...`);
+    return { ready: true }; // Proceed anyway if preflight fails
+  }
+}
+
+async function handleRunProtocol(args: Record<string, unknown>): Promise<unknown> {
+  if (!isServiceHealthy("ai-agents")) {
+    return {
+      error: "ai-agents service not available",
+      status: "waiting",
+      message: "Cannot execute protocols - ai-agents service is not running.",
+      requested_protocol: args.protocol_id,
+      hint: "Start the platform with: docker-compose up -d",
+    };
+  }
+  
+  const { protocol_id, inputs, config, brigade_override } = args as {
+    protocol_id: string;
+    inputs: Record<string, unknown>;
+    config?: Record<string, unknown>;
+    brigade_override?: Record<string, unknown>;
+  };
+  
+  logTool(`🔍 [PREFLIGHT] Checking prerequisites for protocol ${protocol_id}...`);
+  const preflight = await runPreflightCheck(protocol_id, brigade_override, config?.run_cross_reference !== false);
+  if (!preflight.ready) {
+    return preflight.result;
+  }
+  
+  logTool(`🚀 [PROTOCOL] Executing ${protocol_id}...`);
+  return apiCall(
+    `/v1/protocols/${protocol_id}/run`,
+    "POST",
+    { inputs, config, brigade_override },
+    AI_AGENTS_URL,
+    300000
+  );
+}
+
+async function handleDynamicFunction(name: string, args: Record<string, unknown>): Promise<unknown> {
+  const fnName = name.replace("ai_fn_", "").replaceAll("_", "-");
+  const { input, preset, ...rest } = args as {
+    input?: Record<string, unknown>;
+    preset?: string;
+  };
+  return apiCall(`/v1/functions/${fnName}/run`, "POST", { input: input || rest, preset });
+}
+
+async function handleDynamicProtocol(name: string, args: Record<string, unknown>): Promise<unknown> {
+  const protocolId = name.replace("ai_protocol_", "").toUpperCase().replaceAll("_", "-");
+  const { inputs, config, brigade_override } = args as {
+    inputs: Record<string, unknown>;
+    config?: Record<string, unknown>;
+    brigade_override?: Record<string, unknown>;
+  };
+  
+  console.error(`[PREFLIGHT] Checking prerequisites for protocol ${protocolId}...`);
+  const preflight = await runPreflightCheck(protocolId, brigade_override, config?.run_cross_reference !== false);
+  if (!preflight.ready) {
+    return preflight.result;
+  }
+  
+  return apiCall(
+    `/v1/protocols/${protocolId}/run`,
+    "POST",
+    { inputs, config, brigade_override },
+    AI_AGENTS_URL,
+    300000
+  );
+}
+
+// Helper to try local inference
+async function tryLocalInference(
+  messages: Array<{ role: string; content: string }>,
+  maxTokens: number,
+  temperature: number
+): Promise<{ success: boolean; result?: unknown }> {
+  try {
+    console.error("Trying Tier 1: Local inference-service...");
+    let localModel = "qwen3-8b";
+    
+    try {
+      const modelsResponse = await apiCall<{ data: Array<{ id: string; status: string }> }>(
+        "/v1/models", "GET", undefined, INFERENCE_SERVICE_URL, 5000
+      );
+      const loadedModels = modelsResponse.data.filter((m) => m.status === "loaded");
+      if (loadedModels.length > 0) {
+        localModel = loadedModels[0].id;
+        console.error(`Using loaded model: ${localModel}`);
+      }
+    } catch {
+      console.error("Could not query models, using default");
+    }
+    
+    const response = await apiCall<{
+      model?: string;
+      choices: Array<{ message: { content: string } }>;
+      usage?: Record<string, number>;
+    }>(
+      "/v1/chat/completions",
       "POST",
-      {
-        inputs,
-        config,
-        brigade_override,
-      },
-      AI_AGENTS_URL,
-      300000
+      { model: localModel, messages, max_tokens: maxTokens, temperature },
+      INFERENCE_SERVICE_URL,
+      120000
     );
+    
+    return {
+      success: true,
+      result: {
+        tier: "local",
+        model: response.model || localModel,
+        content: response.choices[0].message.content,
+        usage: response.usage || {},
+      },
+    };
+  } catch (error) {
+    console.error(`Tier 1 (local) failed: ${error}`);
+    return { success: false };
+  }
+}
+
+// Helper to try cloud inference
+async function tryCloudInference(
+  messages: Array<{ role: string; content: string }>,
+  maxTokens: number,
+  temperature: number
+): Promise<{ success: boolean; result?: unknown }> {
+  try {
+    console.error("Trying Tier 2: Cloud LLM via llm-gateway...");
+    const response = await apiCall<{
+      model?: string;
+      choices: Array<{ message: { content: string } }>;
+      usage?: Record<string, number>;
+    }>(
+      "/v1/chat/completions",
+      "POST",
+      { model: LLM_GATEWAY_DEFAULT_MODEL, messages, max_tokens: maxTokens, temperature },
+      LLM_GATEWAY_URL,
+      60000
+    );
+    
+    return {
+      success: true,
+      result: {
+        tier: "cloud",
+        model: response.model || LLM_GATEWAY_DEFAULT_MODEL,
+        content: response.choices[0].message.content,
+        usage: response.usage || {},
+      },
+    };
+  } catch (error) {
+    console.error(`Tier 2 (cloud) failed: ${error}`);
+    return { success: false };
+  }
+}
+
+async function handleLlmComplete(args: Record<string, unknown>): Promise<unknown> {
+  const {
+    prompt,
+    model_preference = "auto",
+    max_tokens = 4096,
+    temperature = 0.7,
+    system_prompt,
+  } = args as {
+    prompt: string;
+    model_preference?: "auto" | "local" | "cloud";
+    max_tokens?: number;
+    temperature?: number;
+    system_prompt?: string;
+  };
+
+  const messages: Array<{ role: string; content: string }> = [];
+  if (system_prompt) {
+    messages.push({ role: "system", content: system_prompt });
+  }
+  messages.push({ role: "user", content: prompt });
+
+  if (model_preference === "auto" || model_preference === "local") {
+    const local = await tryLocalInference(messages, max_tokens, temperature);
+    if (local.success) return local.result;
   }
 
-  // LLM Complete with tiered fallback
-  if (name === "llm_complete") {
-    const {
+  if (model_preference === "auto" || model_preference === "cloud") {
+    const cloud = await tryCloudInference(messages, max_tokens, temperature);
+    if (cloud.success) return cloud.result;
+  }
+
+  return {
+    tier: "deferred",
+    model: null,
+    content: null,
+    work_package: {
+      type: "llm_completion",
       prompt,
-      model_preference = "auto",
-      max_tokens = 4096,
-      temperature = 0.7,
       system_prompt,
-    } = args as {
-      prompt: string;
-      model_preference?: "auto" | "local" | "cloud";
-      max_tokens?: number;
-      temperature?: number;
-      system_prompt?: string;
-    };
+      max_tokens,
+      temperature,
+      reason: "All LLM tiers unavailable",
+    },
+  };
+}
 
-    const messages: Array<{ role: string; content: string }> = [];
-    if (system_prompt) {
-      messages.push({ role: "system", content: system_prompt });
-    }
-    messages.push({ role: "user", content: prompt });
+async function handleSemanticSearch(args: Record<string, unknown>): Promise<unknown> {
+  const { query, collection = "all", top_k = 10, threshold = 0.7 } = args as {
+    query: string;
+    collection?: string;
+    top_k?: number;
+    threshold?: number;
+  };
+  return apiCall("/v1/search", "POST", { query, collection, top_k, threshold }, SEMANTIC_SEARCH_URL);
+}
 
-    // Tier 1: Try local inference-service
-    if (model_preference === "auto" || model_preference === "local") {
-      try {
-        console.error("Trying Tier 1: Local inference-service...");
-        
-        // First get the currently loaded model
-        let localModel = "qwen3-8b"; // fallback
-        try {
-          const modelsResponse = await apiCall<{
-            data: Array<{ id: string; status: string }>;
-          }>("/v1/models", "GET", undefined, INFERENCE_SERVICE_URL, 5000);
-          
-          const loadedModels = modelsResponse.data.filter((m) => m.status === "loaded");
-          if (loadedModels.length > 0) {
-            localModel = loadedModels[0].id;
-            console.error(`Using loaded model: ${localModel}`);
-          }
-        } catch {
-          console.error("Could not query models, using default");
-        }
-        
-        const response = await apiCall<{
-          model?: string;
-          choices: Array<{ message: { content: string } }>;
-          usage?: Record<string, number>;
-        }>(
-          "/v1/chat/completions",
-          "POST",
-          {
-            model: localModel,
-            messages,
-            max_tokens,
-            temperature,
-          },
-          INFERENCE_SERVICE_URL,
-          120000 // Increased timeout for local inference
-        );
-        return {
-          tier: "local",
-          model: response.model || localModel,
-          content: response.choices[0].message.content,
-          usage: response.usage || {},
-        };
-      } catch (error) {
-        console.error(`Tier 1 (local) failed: ${error}`);
-      }
-    }
+async function handleHybridSearch(args: Record<string, unknown>): Promise<unknown> {
+  const { query, collection = "all", top_k = 10, semantic_weight = 0.7, keyword_weight = 0.3 } = args as {
+    query: string;
+    collection?: string;
+    top_k?: number;
+    semantic_weight?: number;
+    keyword_weight?: number;
+  };
+  return apiCall("/v1/hybrid-search", "POST", { query, collection, top_k, semantic_weight, keyword_weight }, SEMANTIC_SEARCH_URL);
+}
 
-    // Tier 2: Try cloud via llm-gateway
-    if (model_preference === "auto" || model_preference === "cloud") {
-      try {
-        console.error("Trying Tier 2: Cloud LLM via llm-gateway...");
-        const response = await apiCall<{
-          model?: string;
-          choices: Array<{ message: { content: string } }>;
-          usage?: Record<string, number>;
-        }>(
-          "/v1/chat/completions",
-          "POST",
-          {
-            model: LLM_GATEWAY_DEFAULT_MODEL,
-            messages,
-            max_tokens,
-            temperature,
-          },
-          LLM_GATEWAY_URL,
-          60000
-        );
-        return {
-          tier: "cloud",
-          model: response.model || LLM_GATEWAY_DEFAULT_MODEL,
-          content: response.choices[0].message.content,
-          usage: response.usage || {},
-        };
-      } catch (error) {
-        console.error(`Tier 2 (cloud) failed: ${error}`);
-      }
-    }
+async function handleCodeAnalyze(args: Record<string, unknown>): Promise<unknown> {
+  const { code, analysis_type = "all", language, context } = args as {
+    code: string;
+    analysis_type?: string;
+    language?: string;
+    context?: string;
+  };
+  return apiCall("/v1/analyze", "POST", { code, analysis_type, language, context }, CODE_ORCHESTRATOR_URL);
+}
 
-    // Tier 3: Return work package for client to handle
-    return {
-      tier: "deferred",
-      model: null,
-      content: null,
-      work_package: {
-        type: "llm_completion",
-        prompt,
-        system_prompt,
-        max_tokens,
-        temperature,
-        reason: "All LLM tiers unavailable",
-      },
-    };
+// Helper to execute Neo4j query
+async function executeNeo4jQuery(
+  cypher: string,
+  parameters: Record<string, unknown>
+): Promise<{ results: Array<{ columns: string[]; data: Array<{ row: unknown[] }> }>; errors: Array<{ message: string }> }> {
+  const auth = Buffer.from(`${NEO4J_USER}:${NEO4J_PASSWORD}`).toString("base64");
+  const response = await fetch(`${NEO4J_HTTP_URL}/db/neo4j/tx/commit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` },
+    body: JSON.stringify({ statements: [{ statement: cypher, parameters }] }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Neo4j error (${response.status}): ${error}`);
   }
 
-  // Semantic Search
-  if (name === "semantic_search") {
-    const {
-      query,
-      collection = "all",
-      top_k = 10,
-      threshold = 0.7,
-    } = args as {
-      query: string;
-      collection?: string;
-      top_k?: number;
-      threshold?: number;
-    };
-    return apiCall(
-      "/v1/search",
-      "POST",
-      { query, collection, top_k, threshold },
-      SEMANTIC_SEARCH_URL
+  return response.json() as Promise<{ results: Array<{ columns: string[]; data: Array<{ row: unknown[] }> }>; errors: Array<{ message: string }> }>;
+}
+
+async function handleGraphQuery(args: Record<string, unknown>): Promise<unknown> {
+  const { cypher, parameters = {} } = args as { cypher: string; parameters?: Record<string, unknown> };
+  
+  const data = await executeNeo4jQuery(cypher, parameters);
+  
+  if (data.errors && data.errors.length > 0) {
+    throw new Error(`Cypher error: ${data.errors[0].message}`);
+  }
+
+  const result = data.results[0];
+  if (!result) return { rows: [], columns: [] };
+  
+  return {
+    columns: result.columns,
+    rows: result.data.map((d) => {
+      const row: Record<string, unknown> = {};
+      result.columns.forEach((col, i) => { row[col] = d.row[i]; });
+      return row;
+    }),
+    count: result.data.length,
+  };
+}
+
+async function handleGraphGetNeighbors(args: Record<string, unknown>): Promise<unknown> {
+  const { node_id, node_type, relationship_type, depth = 1 } = args as {
+    node_id: string;
+    node_type?: string;
+    relationship_type?: string;
+    depth?: number;
+  };
+
+  const nodeMatch = node_type ? `(n:${node_type} {name: $node_id})` : `(n {name: $node_id})`;
+  const relMatch = relationship_type ? `-[r:${relationship_type}*1..${depth}]-` : `-[r*1..${depth}]-`;
+  const cypher = `MATCH ${nodeMatch}${relMatch}(m) RETURN DISTINCT n, type(r[0]) as relationship, m LIMIT 50`;
+
+  const data = await executeNeo4jQuery(cypher, { node_id });
+  
+  if (data.errors && data.errors.length > 0) {
+    throw new Error(`Cypher error: ${data.errors[0].message}`);
+  }
+
+  const result = data.results[0];
+  if (!result) return { source: node_id, neighbors: [] };
+
+  return {
+    source: node_id,
+    neighbors: result.data.map((d) => ({ relationship: d.row[1], node: d.row[2] })),
+    count: result.data.length,
+  };
+}
+
+async function handleTextbookSearch(args: Record<string, unknown>): Promise<unknown> {
+  const { query, top_k = 5 } = args as { query: string; books?: string[]; top_k?: number };
+  return apiCall("/v1/search", "POST", { query, collection: "chapters", limit: top_k }, SEMANTIC_SEARCH_URL);
+}
+
+async function handleAuditGenerateFootnotes(args: Record<string, unknown>): Promise<unknown> {
+  const { citations, task_id } = args as {
+    citations: Array<{ marker: string; source_id: string; source_type: string }>;
+    task_id?: string;
+  };
+  return apiCall("/v1/footnotes", "POST", { citations, task_id }, AUDIT_SERVICE_URL);
+}
+
+async function handleAuditValidateCitations(args: Record<string, unknown>): Promise<unknown> {
+  const { content, citations } = args as {
+    content: string;
+    citations: Array<{ marker: string; source_path: string; claimed_content: string }>;
+  };
+  return apiCall("/v1/validate", "POST", { content, citations }, AUDIT_SERVICE_URL);
+}
+
+// Helper to build cross-reference search promises
+function buildCrossRefSearchPromises(
+  query: string,
+  sources: string[],
+  topK: number
+): Promise<{ source: string; results: unknown }>[] {
+  const searchPromises: Promise<{ source: string; results: unknown }>[] = [];
+
+  if (sources.includes("qdrant")) {
+    searchPromises.push(
+      apiCall<unknown>("/v1/search", "POST", { query, collection: "all", limit: topK }, SEMANTIC_SEARCH_URL)
+        .then(results => ({ source: "qdrant", results }))
+        .catch(err => ({ source: "qdrant", results: { error: String(err) } }))
     );
   }
 
-  // Hybrid Search
-  if (name === "hybrid_search") {
-    const {
-      query,
-      collection = "all",
-      top_k = 10,
-      semantic_weight = 0.7,
-      keyword_weight = 0.3,
-    } = args as {
-      query: string;
-      collection?: string;
-      top_k?: number;
-      semantic_weight?: number;
-      keyword_weight?: number;
-    };
-    return apiCall(
-      "/v1/hybrid-search",
-      "POST",
-      { query, collection, top_k, semantic_weight, keyword_weight },
-      SEMANTIC_SEARCH_URL
-    );
-  }
-
-  // Code Analyze
-  if (name === "code_analyze") {
-    const {
-      code,
-      analysis_type = "all",
-      language,
-      context,
-    } = args as {
-      code: string;
-      analysis_type?: string;
-      language?: string;
-      context?: string;
-    };
-    return apiCall(
-      "/v1/analyze",
-      "POST",
-      { code, analysis_type, language, context },
-      CODE_ORCHESTRATOR_URL
-    );
-  }
-
-  // Graph Query (Cypher)
-  if (name === "graph_query") {
-    const { cypher, parameters = {} } = args as {
-      cypher: string;
-      parameters?: Record<string, unknown>;
-    };
-    
-    // Neo4j HTTP API
+  if (sources.includes("neo4j")) {
+    const cypher = `CALL db.index.fulltext.queryNodes("concept_search", $query) YIELD node, score RETURN node, score ORDER BY score DESC LIMIT $top_k`;
     const auth = Buffer.from(`${NEO4J_USER}:${NEO4J_PASSWORD}`).toString("base64");
-    const response = await fetch(`${NEO4J_HTTP_URL}/db/neo4j/tx/commit`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
-      },
-      body: JSON.stringify({
-        statements: [{ statement: cypher, parameters }],
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Neo4j error (${response.status}): ${error}`);
-    }
-
-    const data = await response.json() as {
-      results: Array<{ columns: string[]; data: Array<{ row: unknown[] }> }>;
-      errors: Array<{ message: string }>;
-    };
-    
-    if (data.errors && data.errors.length > 0) {
-      throw new Error(`Cypher error: ${data.errors[0].message}`);
-    }
-
-    // Transform to more readable format
-    const result = data.results[0];
-    if (!result) return { rows: [], columns: [] };
-    
-    return {
-      columns: result.columns,
-      rows: result.data.map((d) => {
-        const row: Record<string, unknown> = {};
-        result.columns.forEach((col, i) => {
-          row[col] = d.row[i];
-        });
-        return row;
-      }),
-      count: result.data.length,
-    };
-  }
-
-  // Graph Get Neighbors
-  if (name === "graph_get_neighbors") {
-    const {
-      node_id,
-      node_type,
-      relationship_type,
-      depth = 1,
-    } = args as {
-      node_id: string;
-      node_type?: string;
-      relationship_type?: string;
-      depth?: number;
-    };
-
-    // Build Cypher query
-    const nodeMatch = node_type 
-      ? `(n:${node_type} {name: $node_id})`
-      : `(n {name: $node_id})`;
-    const relMatch = relationship_type 
-      ? `-[r:${relationship_type}*1..${depth}]-`
-      : `-[r*1..${depth}]-`;
-    
-    const cypher = `MATCH ${nodeMatch}${relMatch}(m) RETURN DISTINCT n, type(r[0]) as relationship, m LIMIT 50`;
-
-    const auth = Buffer.from(`${NEO4J_USER}:${NEO4J_PASSWORD}`).toString("base64");
-    const response = await fetch(`${NEO4J_HTTP_URL}/db/neo4j/tx/commit`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
-      },
-      body: JSON.stringify({
-        statements: [{ statement: cypher, parameters: { node_id } }],
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Neo4j error (${response.status}): ${error}`);
-    }
-
-    const data = await response.json() as {
-      results: Array<{ columns: string[]; data: Array<{ row: unknown[] }> }>;
-      errors: Array<{ message: string }>;
-    };
-    
-    if (data.errors && data.errors.length > 0) {
-      throw new Error(`Cypher error: ${data.errors[0].message}`);
-    }
-
-    const result = data.results[0];
-    if (!result) return { source: node_id, neighbors: [] };
-
-    return {
-      source: node_id,
-      neighbors: result.data.map((d) => ({
-        relationship: d.row[1],
-        node: d.row[2],
-      })),
-      count: result.data.length,
-    };
-  }
-
-  // Textbook Search
-  if (name === "textbook_search") {
-    const {
-      query,
-      books,
-      top_k = 5,
-    } = args as {
-      query: string;
-      books?: string[];
-      top_k?: number;
-    };
-    // Route through semantic-search which indexes textbooks in 'chapters' collection
-    // Note: 'chapters' collection contains indexed book chapters from ai-platform-data
-    return apiCall(
-      "/v1/search",
-      "POST",
-      { 
-        query, 
-        collection: "chapters",  // Collection name in Qdrant
-        limit: top_k,  // API uses 'limit' not 'top_k'
-      },
-      SEMANTIC_SEARCH_URL
+    searchPromises.push(
+      fetch(`${NEO4J_HTTP_URL}/db/neo4j/tx/commit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` },
+        body: JSON.stringify({ statements: [{ statement: cypher, parameters: { query, top_k: topK } }] }),
+      })
+        .then(r => r.json())
+        .then(data => ({ source: "neo4j", results: data }))
+        .catch(err => ({ source: "neo4j", results: { error: String(err) } }))
     );
   }
 
-  // Audit Generate Footnotes
-  if (name === "audit_generate_footnotes") {
-    const { citations, task_id } = args as {
-      citations: Array<{ marker: string; source_id: string; source_type: string }>;
-      task_id?: string;
-    };
-    return apiCall(
-      "/v1/footnotes",
-      "POST",
-      { citations, task_id },
-      AUDIT_SERVICE_URL
+  if (sources.includes("textbooks")) {
+    searchPromises.push(
+      apiCall<unknown>("/v1/search", "POST", { query, collection: "chapters", limit: topK }, SEMANTIC_SEARCH_URL)
+        .then(results => ({ source: "textbooks", results }))
+        .catch(err => ({ source: "textbooks", results: { error: String(err) } }))
     );
   }
 
-  // Audit Validate Citations
-  if (name === "audit_validate_citations") {
-    const { content, citations } = args as {
-      content: string;
-      citations: Array<{ marker: string; source_path: string; claimed_content: string }>;
-    };
-    return apiCall(
-      "/v1/validate",
-      "POST",
-      { content, citations },
-      AUDIT_SERVICE_URL
+  if (sources.includes("code")) {
+    searchPromises.push(
+      apiCall<unknown>("/v1/search", "POST", { query, analysis_type: "semantic" }, CODE_ORCHESTRATOR_URL)
+        .then(results => ({ source: "code", results }))
+        .catch(err => ({ source: "code", results: { error: String(err) } }))
     );
   }
 
-  // Full Cross-Reference Pipeline (Stage 2)
-  if (name === "cross_reference_full") {
-    const {
-      query,
-      sources = ["qdrant", "neo4j", "textbooks", "code", "code_chunks"],
-      top_k = 5,
-      merge_strategy = "by_relevance",
-    } = args as {
-      query: string;
-      sources?: string[];
-      top_k?: number;
-      merge_strategy?: string;
-    };
+  if (sources.includes("code_chunks")) {
+    searchPromises.push(
+      apiCall<unknown>("/v1/search", "POST", { query, collection: "code_chunks", limit: topK }, SEMANTIC_SEARCH_URL)
+        .then(results => ({ source: "code_chunks", results }))
+        .catch(err => ({ source: "code_chunks", results: { error: String(err) } }))
+    );
+  }
 
-    // Execute parallel searches across all requested sources
-    const searchPromises: Promise<{ source: string; results: unknown }>[] = [];
+  return searchPromises;
+}
 
-    if (sources.includes("qdrant")) {
-      searchPromises.push(
-        apiCall<unknown>("/v1/search", "POST", { query, collection: "all", limit: top_k }, SEMANTIC_SEARCH_URL)
-          .then(results => ({ source: "qdrant", results }))
-          .catch(err => ({ source: "qdrant", results: { error: String(err) } }))
-      );
-    }
+async function handleCrossReferenceFull(args: Record<string, unknown>): Promise<unknown> {
+  const {
+    query,
+    sources = ["qdrant", "neo4j", "textbooks", "code", "code_chunks"],
+    top_k = 5,
+    merge_strategy = "by_relevance",
+  } = args as { query: string; sources?: string[]; top_k?: number; merge_strategy?: string };
 
-    if (sources.includes("neo4j")) {
-      const cypher = `
-        CALL db.index.fulltext.queryNodes("concept_search", $query) 
-        YIELD node, score 
-        RETURN node, score 
-        ORDER BY score DESC 
-        LIMIT $top_k
-      `;
-      const auth = Buffer.from(`${NEO4J_USER}:${NEO4J_PASSWORD}`).toString("base64");
-      searchPromises.push(
-        fetch(`${NEO4J_HTTP_URL}/db/neo4j/tx/commit`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Basic ${auth}`,
-          },
-          body: JSON.stringify({
-            statements: [{ statement: cypher, parameters: { query, top_k } }],
-          }),
-        })
-          .then(r => r.json())
-          .then(data => ({ source: "neo4j", results: data }))
-          .catch(err => ({ source: "neo4j", results: { error: String(err) } }))
-      );
-    }
+  const searchPromises = buildCrossRefSearchPromises(query, sources, top_k);
+  const allResults = await Promise.all(searchPromises);
 
-    if (sources.includes("textbooks")) {
-      // Search 'chapters' collection which contains indexed book chapters from textbooks
-      searchPromises.push(
-        apiCall<unknown>("/v1/search", "POST", { query, collection: "chapters", limit: top_k }, SEMANTIC_SEARCH_URL)
-          .then(results => ({ source: "textbooks", results }))
-          .catch(err => ({ source: "textbooks", results: { error: String(err) } }))
-      );
-    }
+  return {
+    query,
+    sources_searched: sources,
+    merge_strategy,
+    results: allResults,
+    total_sources: allResults.length,
+  };
+}
 
-    if (sources.includes("code")) {
-      searchPromises.push(
-        apiCall<unknown>("/v1/search", "POST", { query, analysis_type: "semantic" }, CODE_ORCHESTRATOR_URL)
-          .then(results => ({ source: "code", results }))
-          .catch(err => ({ source: "code", results: { error: String(err) } }))
-      );
-    }
+// =============================================================================
+// Tool Dispatch Map - Routes tool names to their handlers
+// =============================================================================
+type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
-    // NEW: Search code_chunks collection for actual GitHub code snippets
-    if (sources.includes("code_chunks")) {
-      searchPromises.push(
-        apiCall<unknown>("/v1/search", "POST", { query, collection: "code_chunks", limit: top_k }, SEMANTIC_SEARCH_URL)
-          .then(results => ({ source: "code_chunks", results }))
-          .catch(err => ({ source: "code_chunks", results: { error: String(err) } }))
-      );
-    }
+const toolHandlers: Record<string, ToolHandler> = {
+  "ai_agents_health": handleHealthTool,
+  "ai_agents_list_functions": handleListFunctions,
+  "ai_agents_list_protocols": handleListProtocols,
+  "ai_agents_run_function": handleRunFunction,
+  "ai_agents_run_protocol": handleRunProtocol,
+  "llm_complete": handleLlmComplete,
+  "semantic_search": handleSemanticSearch,
+  "hybrid_search": handleHybridSearch,
+  "code_analyze": handleCodeAnalyze,
+  "graph_query": handleGraphQuery,
+  "graph_get_neighbors": handleGraphGetNeighbors,
+  "textbook_search": handleTextbookSearch,
+  "audit_generate_footnotes": handleAuditGenerateFootnotes,
+  "audit_validate_citations": handleAuditValidateCitations,
+  "cross_reference_full": handleCrossReferenceFull,
+};
 
-    // Wait for all searches in parallel
-    const allResults = await Promise.all(searchPromises);
+// Tool execution handler - now simplified with dispatch pattern
+async function executeTool(
+  name: string,
+  args: Record<string, unknown>
+): Promise<unknown> {
+  // Check static tool handlers first
+  const handler = toolHandlers[name];
+  if (handler) {
+    return handler(args);
+  }
 
-    // Merge results based on strategy
-    return {
-      query,
-      sources_searched: sources,
-      merge_strategy,
-      results: allResults,
-      total_sources: allResults.length,
-    };
+  // Check dynamic function tools (ai_fn_*)
+  if (name.startsWith("ai_fn_")) {
+    return handleDynamicFunction(name, args);
+  }
+
+  // Check dynamic protocol tools (ai_protocol_*)
+  if (name.startsWith("ai_protocol_")) {
+    return handleDynamicProtocol(name, args);
   }
 
   throw new Error(`Unknown tool: ${name}`);
 }
 
 // Main server setup
+// @ts-expect-error Server class deprecated but McpServer migration pending
 const server = new Server(
   {
     name: "ai-agents-mcp-server",
@@ -1607,7 +1516,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
-    const result = await executeTool(name, (args || {}) as Record<string, unknown>);
+    const result = await executeTool(name, args ?? {});
     return {
       content: [
         {
@@ -1630,8 +1539,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Start server
-async function main() {
+// Start server with top-level await
+try {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   
@@ -1646,9 +1555,7 @@ async function main() {
   
   // Start background health monitor - keeps checking until services come up
   startHealthMonitor();
-}
-
-main().catch((error) => {
+} catch (error) {
   console.error("Fatal error:", error);
   process.exit(1);
-});
+}
