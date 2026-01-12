@@ -15,6 +15,30 @@ const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || "http://localhost:808
 const NEO4J_HTTP_URL = process.env.NEO4J_HTTP_URL || "http://localhost:7474";
 const NEO4J_USER = process.env.NEO4J_USER || "neo4j";
 const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD || "devpassword";
+// =============================================================================
+// Logging Configuration
+// LOG_LEVEL: "error" (default) = only errors, state changes, tool execution
+//            "info" = include routine health checks
+//            "debug" = verbose
+// =============================================================================
+const LOG_LEVEL = process.env.LOG_LEVEL || "error";
+function logInfo(message) {
+    if (LOG_LEVEL === "info" || LOG_LEVEL === "debug") {
+        console.error(message);
+    }
+}
+function logDebug(message) {
+    if (LOG_LEVEL === "debug") {
+        console.error(message);
+    }
+}
+function logError(message) {
+    console.error(message);
+}
+function logTool(message) {
+    // Tool execution always logged
+    console.error(message);
+}
 // WBS-PS3: Health cache configuration
 const HEALTH_CACHE_TTL_MS = 10000; // Cache health status for 10 seconds
 let healthCacheTime = 0; // Last time health was cached
@@ -133,7 +157,10 @@ async function checkServiceHealth(serviceName) {
         // Update error rate (rolling)
         service.errorRate = service.totalErrors / service.totalRequests;
         if (!wasHealthy && service.healthy) {
-            console.error(`✅ ${serviceName} is now ONLINE at ${service.url} (${responseTime}ms)`);
+            logError(`✅ ${serviceName} is now ONLINE at ${service.url} (${responseTime}ms)`);
+        }
+        else {
+            logDebug(`[health] ${serviceName} healthy (${responseTime}ms)`);
         }
         return service.healthy;
     }
@@ -146,9 +173,12 @@ async function checkServiceHealth(serviceName) {
         service.errorRate = service.totalErrors / service.totalRequests;
         service.responseTimeMs = responseTime;
         service.lastError = error instanceof Error ? error.message : String(error);
-        // Only log every 10th failure to reduce noise
-        if (service.consecutiveFailures === 1 || service.consecutiveFailures % 10 === 0) {
-            console.error(`⏳ ${serviceName} not available (attempt ${service.consecutiveFailures}): ${service.lastError}`);
+        // Log first failure, then every 10th to reduce noise
+        if (service.consecutiveFailures === 1) {
+            logError(`❌ ${serviceName} OFFLINE: ${service.lastError}`);
+        }
+        else if (service.consecutiveFailures % 10 === 0) {
+            logInfo(`⏳ ${serviceName} still offline (attempt ${service.consecutiveFailures})`);
         }
         return false;
     }
@@ -163,7 +193,7 @@ async function checkAllServices() {
 function startHealthMonitor() {
     if (healthCheckTimer)
         return;
-    console.error("🔄 Starting health monitor - will auto-connect when services come online...");
+    logInfo("🔄 Starting health monitor - will auto-connect when services come online...");
     const runHealthCheck = async () => {
         const results = await checkAllServices();
         const anyHealthy = Object.values(results).some((h) => h);
@@ -173,7 +203,7 @@ function startHealthMonitor() {
         healthCheckTimer = setTimeout(runHealthCheck, interval);
         // Refresh cache when services come online
         if (anyHealthy && lastCacheTime === 0) {
-            console.error("🔄 Services detected - refreshing tool cache...");
+            logInfo("🔄 Services detected - refreshing tool cache...");
             await refreshCache();
         }
     };
@@ -309,7 +339,7 @@ async function refreshCache() {
             ? protocolsRes
             : protocolsRes.protocols || [];
         lastCacheTime = now;
-        console.error(`Cache refreshed: ${cachedFunctions.length} functions, ${cachedProtocols.length} protocols`);
+        logInfo(`📦 Cache refreshed: ${cachedFunctions.length} functions, ${cachedProtocols.length} protocols`);
     }
     catch (error) {
         console.error("Failed to refresh cache:", error);
@@ -819,17 +849,17 @@ async function executeTool(name, args) {
         const { protocol_id, inputs, config, brigade_override } = args;
         // CRITICAL: Run preflight checks FIRST with short timeout (5s)
         // This prevents long waits when inference-service or models are unavailable
-        console.error(`[PREFLIGHT] Checking prerequisites for protocol ${protocol_id}...`);
+        logTool(`🔍 [PREFLIGHT] Checking prerequisites for protocol ${protocol_id}...`);
         try {
             const preflightResult = await apiCall(`/v1/protocols/${protocol_id}/preflight`, "POST", {
                 brigade_override,
                 enable_cross_reference: config?.run_cross_reference ?? true,
             }, AI_AGENTS_URL, 5000 // 5 second timeout for preflight
             );
-            console.error(`[PREFLIGHT] Complete in ${preflightResult.check_time_ms}ms - ready: ${preflightResult.ready}`);
+            logTool(`✓ [PREFLIGHT] Complete in ${preflightResult.check_time_ms}ms - ready: ${preflightResult.ready}`);
             if (!preflightResult.ready) {
                 // FAST FAIL - don't wait for protocol execution
-                console.error(`[PREFLIGHT] BLOCKED: ${preflightResult.blocking_issues.join(", ")}`);
+                logError(`🚫 [PREFLIGHT] BLOCKED: ${preflightResult.blocking_issues.join(", ")}`);
                 return {
                     error: "preflight_failed",
                     status: "blocked",
@@ -845,15 +875,15 @@ async function executeTool(name, args) {
             }
             // Log warnings but proceed
             if (preflightResult.warnings.length > 0) {
-                console.error(`[PREFLIGHT] Warnings: ${preflightResult.warnings.join(", ")}`);
+                logTool(`⚠️ [PREFLIGHT] Warnings: ${preflightResult.warnings.join(", ")}`);
             }
         }
         catch (preflightError) {
             // Preflight failed - still try to run but log warning
-            console.error(`[PREFLIGHT] Check failed: ${preflightError}. Proceeding with caution...`);
+            logError(`⚠️ [PREFLIGHT] Check failed: ${preflightError}. Proceeding with caution...`);
         }
         // Preflight passed - now run protocol with longer timeout
-        console.error(`[PROTOCOL] Executing ${protocol_id}...`);
+        logTool(`🚀 [PROTOCOL] Executing ${protocol_id}...`);
         return apiCall(`/v1/protocols/${protocol_id}/run`, "POST", {
             inputs,
             config,
