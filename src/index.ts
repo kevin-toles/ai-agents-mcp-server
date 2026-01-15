@@ -158,14 +158,14 @@ async function buildToolsList(): Promise<Tool[]> {
     {
       name: "ai_agents_run_protocol",
       description:
-        "Execute a Kitchen Brigade protocol for multi-agent collaboration. Protocols include ROUNDTABLE_DISCUSSION, DEBATE_PROTOCOL, WBS_GENERATION, etc.",
+        "Execute a Kitchen Brigade protocol for multi-agent collaboration. Protocols include ROUNDTABLE_DISCUSSION, DEBATE_PROTOCOL, WBS_GENERATION, RELEVANCE_VALIDATION, etc.",
       inputSchema: {
         type: "object",
         properties: {
           protocol_id: {
             type: "string",
             description:
-              "Protocol ID (e.g., 'ROUNDTABLE_DISCUSSION', 'DEBATE_PROTOCOL', 'WBS_GENERATION', 'ARCHITECTURE_RECONCILIATION')",
+              "Protocol ID (e.g., 'ROUNDTABLE_DISCUSSION', 'DEBATE_PROTOCOL', 'WBS_GENERATION', 'ARCHITECTURE_RECONCILIATION', 'RELEVANCE_VALIDATION')",
           },
           inputs: {
             type: "object",
@@ -192,6 +192,33 @@ async function buildToolsList(): Promise<Tool[]> {
               max_feedback_loops: { type: "number" },
               allow_feedback: { type: "boolean" },
               run_cross_reference: { type: "boolean" },
+            },
+          },
+          relevance_validation: {
+            type: "object",
+            description:
+              "Relevance validation configuration (Stage 0.x). Controls parallel LLM rating and conditional discussion for cross-reference results.",
+            properties: {
+              enabled: {
+                type: "boolean",
+                default: true,
+                description: "Enable relevance validation pipeline",
+              },
+              variance_threshold: {
+                type: "number",
+                default: 2.0,
+                description: "Score variance that triggers discussion (Stage 0.2)",
+              },
+              max_discussion_rounds: {
+                type: "number",
+                default: 3,
+                description: "Maximum rounds for relevance discussion",
+              },
+              pattern_bundle_enabled: {
+                type: "boolean",
+                default: true,
+                description: "Inject engineering patterns into prompts",
+              },
             },
           },
           brigade_override: {
