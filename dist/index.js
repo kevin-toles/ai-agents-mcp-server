@@ -9,6 +9,7 @@ const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL || "http://localhost:8080";
 const LLM_GATEWAY_DEFAULT_MODEL = process.env.LLM_GATEWAY_DEFAULT_MODEL || "gpt-4o";
 const SEMANTIC_SEARCH_URL = process.env.SEMANTIC_SEARCH_URL || "http://localhost:8081";
 const CODE_ORCHESTRATOR_URL = process.env.CODE_ORCHESTRATOR_URL || "http://localhost:8083";
+const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || "http://localhost:8084";
 const NEO4J_HTTP_URL = process.env.NEO4J_HTTP_URL || "http://localhost:7474";
 const NEO4J_USER = process.env.NEO4J_USER || "neo4j";
 const NEO4J_PASSWORD = process.env.NEO4J_PASSWORD || "devpassword";
@@ -95,8 +96,8 @@ async function buildToolsList() {
         },
         // Generic execution tools
         {
-            name: "ai_agents_run_function",
-            description: "Execute an agent function by name. Use ai_agents_list_functions to see available functions like summarize-content, generate-code, analyze-artifact, etc.",
+            name: "run_agent_function",
+            description: "Execute a single-purpose agent function. Use ai_agents_list_functions to see available functions (summarize-content, cross-reference, decompose-task, etc.).",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -117,8 +118,8 @@ async function buildToolsList() {
             },
         },
         {
-            name: "ai_agents_run_protocol",
-            description: "Execute a Kitchen Brigade protocol for multi-agent collaboration. Protocols include ROUNDTABLE_DISCUSSION, DEBATE_PROTOCOL, WBS_GENERATION, RELEVANCE_VALIDATION, etc.",
+            name: "run_discussion",
+            description: "Run multi-LLM discussion using a protocol. Use ai_agents_list_protocols to see available protocols (ROUNDTABLE_DISCUSSION, DEBATE_PROTOCOL, WBS_GENERATION, etc.). Supports LLM selection via brigade_override parameter.",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -305,7 +306,7 @@ async function buildToolsList() {
         },
         {
             name: "graph_query",
-            description: "Query the Neo4j knowledge graph directly using Cypher. Access relationships between code entities, concepts, and documentation.",
+            description: "Query the Neo4j knowledge graph directly using Cypher. For advanced users - use run_agent_function with cross-reference for normal searches.",
             inputSchema: {
                 type: "object",
                 properties: {
@@ -321,89 +322,69 @@ async function buildToolsList() {
                 required: ["cypher"],
             },
         },
+        // =============================================================================
+        // WBS-AUD: Audit Tools (audit-service:8084)
+        // =============================================================================
         {
-            name: "graph_get_neighbors",
-            description: "Get all nodes connected to a specific node in the knowledge graph. Useful for exploring relationships.",
+            name: "test_compliance_audit",
+            description: "Audit tests for anti-patterns (AP1-AP4, U2) per TEST_AUDIT_GUIDELINES.md. Uses CodeBERT cross-reference to validate test quality against coding standards.",
             inputSchema: {
                 type: "object",
                 properties: {
-                    node_id: {
+                    repo_path: {
                         type: "string",
-                        description: "The ID or name of the node to explore",
+                        description: "Path to repository to audit",
                     },
-                    node_type: {
-                        type: "string",
-                        description: "Type of node: 'Function', 'Class', 'Module', 'Concept', 'Document'",
-                    },
-                    relationship_type: {
-                        type: "string",
-                        description: "Filter by relationship type: 'CALLS', 'IMPORTS', 'INHERITS', 'REFERENCES', etc.",
-                    },
-                    depth: {
+                    threshold: {
                         type: "number",
-                        description: "How many hops to traverse (default: 1)",
+                        description: "Similarity threshold for pattern matching (default: 0.7)",
+                    },
+                    cross_reference: {
+                        type: "boolean",
+                        description: "Enable CodeBERT cross-reference validation (default: true)",
                     },
                 },
-                required: ["node_id"],
+                required: ["repo_path"],
             },
         },
-    ];
-    // Add dynamic function-specific tools
-    for (const fn of cachedFunctions) {
-        const inputSchema = fn.input_schema && typeof fn.input_schema === 'object' && 'type' in fn.input_schema
-            ? fn.input_schema
-            : {
-                type: "object",
-                properties: {
-                    input: {
-                        type: "object",
-                        description: "Input parameters for the function",
-                    },
-                    preset: {
-                        type: "string",
-                        description: "Optional preset configuration",
-                    },
-                },
-                required: ["input"],
-            };
-        tools.push({
-            name: `ai_fn_${fn.name.replaceAll("-", "_")}`,
-            description: fn.description || `Execute the ${fn.name} agent function`,
-            inputSchema,
-        });
-    }
-    // Add dynamic protocol-specific tools
-    for (const protocol of cachedProtocols) {
-        tools.push({
-            name: `ai_protocol_${protocol.id.toLowerCase().replaceAll("-", "_")}`,
-            description: protocol.description || `Execute the ${protocol.name || protocol.id} Kitchen Brigade protocol`,
+        {
+            name: "code_pattern_audit",
+            description: "Detect code anti-patterns using dual-net detection (regex + semantic). 4-layer pipeline: Detection → Enrichment → Scoring → Reporting. Returns violations with confidence scores and remediation examples.",
             inputSchema: {
                 type: "object",
                 properties: {
-                    inputs: {
-                        type: "object",
-                        description: "Protocol inputs",
-                        properties: {
-                            topic: { type: "string", description: "Main topic for discussion" },
-                            context: { type: "string", description: "Background context" },
-                            documents: { type: "array", items: { type: "string" }, description: "Document paths" },
-                            constraints: { type: "array", items: { type: "string" }, description: "Constraints" },
-                        },
-                        required: ["topic"],
+                    code: {
+                        type: "string",
+                        description: "Source code to analyze",
                     },
-                    config: {
-                        type: "object",
-                        description: "Execution configuration"
+                    file_path: {
+                        type: "string",
+                        description: "Optional file path for language detection",
                     },
-                    brigade_override: {
-                        type: "object",
-                        description: "Override brigade role models"
+                    language: {
+                        type: "string",
+                        description: "Explicit language override (python, javascript, etc.)",
+                    },
+                    use_semantic: {
+                        type: "boolean",
+                        description: "Enable semantic search enrichment from Qdrant (default: true)",
+                    },
+                    include_remediation: {
+                        type: "boolean",
+                        description: "Include fix examples from good patterns collection (default: true)",
+                    },
+                    confidence_threshold: {
+                        type: "number",
+                        description: "Minimum confidence to report (0-1, default: 0.3)",
                     },
                 },
-                required: ["inputs"],
+                required: ["code"],
             },
-        });
-    }
+        },
+        // NOTE: graph_get_neighbors removed - cross-reference now includes Neo4j via UnifiedRetriever
+    ];
+    // NOTE: Dynamic ai_fn_* and ai_protocol_* tools removed to reduce clutter.
+    // Use run_agent_function and run_discussion instead with function_name/protocol_id parameters.
     return tools;
 }
 // Core tool handlers
@@ -482,29 +463,46 @@ async function handleGraphQuery(args) {
         count: result.data.length,
     };
 }
+// =============================================================================
+// WBS-AUD: Audit Tool Handlers (audit-service:8084)
+// =============================================================================
+async function handleTestComplianceAudit(args) {
+    const { repo_path, threshold = 0.7, cross_reference = true } = args;
+    console.error(`Calling audit-service cross-reference for: ${repo_path}`);
+    return apiCall("/v1/audit/cross-reference", "POST", {
+        repo_path,
+        threshold,
+        cross_reference,
+    }, AUDIT_SERVICE_URL, 120000); // 2 minute timeout for large repos
+}
+async function handleCodePatternAudit(args) {
+    const { code, file_path, language, use_semantic = true, include_remediation = true, confidence_threshold = 0.3, } = args;
+    console.error(`Calling audit-service pattern detection (semantic=${use_semantic})`);
+    return apiCall("/v1/patterns/detect", "POST", {
+        code,
+        file_path,
+        language,
+        use_semantic,
+        include_remediation,
+        confidence_threshold,
+        max_results: 100,
+    }, AUDIT_SERVICE_URL, 60000); // 1 minute timeout
+}
 // Static tool handlers map
 const TOOL_HANDLERS = {
     ai_agents_health: handleHealth,
     ai_agents_list_functions: handleListFunctions,
     ai_agents_list_protocols: handleListProtocols,
-    ai_agents_run_function: handleRunFunction,
-    ai_agents_run_protocol: handleRunProtocol,
+    run_agent_function: handleRunFunction,
+    run_discussion: handleRunProtocol,
     semantic_search: handleSemanticSearch,
     hybrid_search: handleHybridSearch,
     code_analyze: handleCodeAnalyze,
     graph_query: handleGraphQuery,
+    // WBS-AUD: Audit tools
+    test_compliance_audit: handleTestComplianceAudit,
+    code_pattern_audit: handleCodePatternAudit,
 };
-// Dynamic tool dispatch
-async function handleDynamicFunction(name, args) {
-    const fnName = name.replace("ai_fn_", "").replaceAll("_", "-");
-    const { input, preset, ...rest } = args;
-    return apiCall(`/v1/functions/${fnName}/run`, "POST", { input: input || rest, preset });
-}
-async function handleDynamicProtocol(name, args) {
-    const protocolId = name.replace("ai_protocol_", "").toUpperCase().replaceAll("_", "-");
-    const { inputs, config, brigade_override } = args;
-    return apiCall(`/v1/protocols/${protocolId}/run`, "POST", { inputs, config, brigade_override });
-}
 // Tool execution handler
 async function executeTool(name, args) {
     // Check static handlers first
@@ -512,21 +510,9 @@ async function executeTool(name, args) {
     if (handler) {
         return handler(args);
     }
-    // Dynamic function tools (ai_fn_*)
-    if (name.startsWith("ai_fn_")) {
-        return handleDynamicFunction(name, args);
-    }
-    // Dynamic protocol tools (ai_protocol_*)
-    if (name.startsWith("ai_protocol_")) {
-        return handleDynamicProtocol(name, args);
-    }
     // LLM Complete with tiered fallback
     if (name === "llm_complete") {
         return handleLlmComplete(args);
-    }
-    // Graph Get Neighbors
-    if (name === "graph_get_neighbors") {
-        return handleGraphGetNeighbors(args);
     }
     throw new Error(`Unknown tool: ${name}`);
 }
@@ -597,40 +583,7 @@ async function tryCloudLlm(messages, max_tokens, temperature) {
         return null;
     }
 }
-// Graph Get Neighbors handler
-async function handleGraphGetNeighbors(args) {
-    const { node_id, node_type, relationship_type, depth = 1 } = args;
-    const nodeMatch = node_type ? `(n:${node_type} {name: $node_id})` : `(n {name: $node_id})`;
-    const relMatch = relationship_type ? `-[r:${relationship_type}*1..${depth}]-` : `-[r*1..${depth}]-`;
-    const cypher = `MATCH ${nodeMatch}${relMatch}(m) RETURN DISTINCT n, type(r[0]) as relationship, m LIMIT 50`;
-    const auth = Buffer.from(`${NEO4J_USER}:${NEO4J_PASSWORD}`).toString("base64");
-    const response = await fetch(`${NEO4J_HTTP_URL}/db/neo4j/tx/commit`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Basic ${auth}`,
-        },
-        body: JSON.stringify({ statements: [{ statement: cypher, parameters: { node_id } }] }),
-    });
-    if (!response.ok) {
-        throw new Error(`Neo4j error (${response.status}): ${await response.text()}`);
-    }
-    const data = await response.json();
-    if (data.errors?.length > 0) {
-        throw new Error(`Cypher error: ${data.errors[0].message}`);
-    }
-    const result = data.results[0];
-    if (!result)
-        return { source: node_id, neighbors: [] };
-    return {
-        source: node_id,
-        neighbors: result.data.map((d) => ({
-            relationship: d.row[1],
-            node: d.row[2],
-        })),
-        count: result.data.length,
-    };
-}
+// NOTE: handleGraphGetNeighbors removed - cross-reference now includes Neo4j via UnifiedRetriever
 // Main server setup
 const server = new Server({
     name: "ai-agents-mcp-server",
