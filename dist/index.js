@@ -327,24 +327,32 @@ async function buildToolsList() {
         // =============================================================================
         {
             name: "test_compliance_audit",
-            description: "Audit tests for anti-patterns (AP1-AP4, U2) per TEST_AUDIT_GUIDELINES.md. Uses CodeBERT cross-reference to validate test quality against coding standards.",
+            description: "Audit code against reference chapters using CodeBERT similarity. Validates that generated code matches expected patterns from reference materials.",
             inputSchema: {
                 type: "object",
                 properties: {
-                    repo_path: {
+                    code: {
                         type: "string",
-                        description: "Path to repository to audit",
+                        description: "Generated code to audit against references",
+                    },
+                    references: {
+                        type: "array",
+                        description: "Reference chapters to compare against (optional)",
+                        items: {
+                            type: "object",
+                            properties: {
+                                chapter_id: { type: "string" },
+                                title: { type: "string" },
+                                content: { type: "string" },
+                            },
+                        },
                     },
                     threshold: {
                         type: "number",
-                        description: "Similarity threshold for pattern matching (default: 0.7)",
-                    },
-                    cross_reference: {
-                        type: "boolean",
-                        description: "Enable CodeBERT cross-reference validation (default: true)",
+                        description: "Similarity threshold (0.0-1.0, default: 0.7)",
                     },
                 },
-                required: ["repo_path"],
+                required: ["code"],
             },
         },
         {
@@ -467,13 +475,13 @@ async function handleGraphQuery(args) {
 // WBS-AUD: Audit Tool Handlers (audit-service:8084)
 // =============================================================================
 async function handleTestComplianceAudit(args) {
-    const { repo_path, threshold = 0.7, cross_reference = true } = args;
-    console.error(`Calling audit-service cross-reference for: ${repo_path}`);
+    const { code, references = [], threshold = 0.7 } = args;
+    console.error(`Calling audit-service cross-reference (threshold=${threshold})`);
     return apiCall("/v1/audit/cross-reference", "POST", {
-        repo_path,
+        code,
+        references,
         threshold,
-        cross_reference,
-    }, AUDIT_SERVICE_URL, 120000); // 2 minute timeout for large repos
+    }, AUDIT_SERVICE_URL, 120000); // 2 minute timeout for large code
 }
 async function handleCodePatternAudit(args) {
     const { code, file_path, language, use_semantic = true, include_remediation = true, confidence_threshold = 0.3, } = args;
