@@ -1,0 +1,85 @@
+{
+  "// ==========================================================================": "",
+  "// AI Platform MCP Server Configuration": "",
+  "// ==========================================================================": "",
+  "// This file documents all supported deployment modes for the MCP server.": "",
+  "// Copy the appropriate configuration to ~/.vscode/mcp.json": "",
+  "// ==========================================================================": "",
+  
+  "hybrid": {
+    "// Description": "Infrastructure in Docker, services native (localhost)",
+    "servers": {
+      "ai-kitchen-br": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["dist/index.js"],
+        "cwd": "/Users/kevintoles/POC/ai-agents-mcp-server",
+        "env": {
+          "PLATFORM_MODE": "hybrid",
+          "AI_AGENTS_URL": "http://localhost:8082",
+          "INFERENCE_SERVICE_URL": "http://localhost:8085",
+          "LLM_GATEWAY_URL": "http://localhost:8080",
+          "LLM_GATEWAY_DEFAULT_MODEL": "gpt-4o",
+          "SEMANTIC_SEARCH_URL": "http://localhost:8081",
+          "CODE_ORCHESTRATOR_URL": "http://localhost:8083",
+          "AUDIT_SERVICE_URL": "http://localhost:8084",
+          "NEO4J_HTTP_URL": "http://localhost:7474",
+          "NEO4J_USER": "neo4j",
+          "NEO4J_PASSWORD": "devpassword"
+        }
+      }
+    }
+  },
+  
+  "docker": {
+    "// Description": "Everything in Docker (use container names)",
+    "servers": {
+      "ai-kitchen-br": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["dist/index.js"],
+        "cwd": "/Users/kevintoles/POC/ai-agents-mcp-server",
+        "env": {
+          "PLATFORM_MODE": "docker",
+          "AI_AGENTS_URL": "http://host.docker.internal:8082",
+          "INFERENCE_SERVICE_URL": "http://host.docker.internal:8085",
+          "LLM_GATEWAY_URL": "http://host.docker.internal:8080",
+          "LLM_GATEWAY_DEFAULT_MODEL": "gpt-4o",
+          "SEMANTIC_SEARCH_URL": "http://host.docker.internal:8081",
+          "CODE_ORCHESTRATOR_URL": "http://host.docker.internal:8083",
+          "AUDIT_SERVICE_URL": "http://host.docker.internal:8084",
+          "NEO4J_HTTP_URL": "http://host.docker.internal:7474",
+          "NEO4J_USER": "neo4j",
+          "NEO4J_PASSWORD": "devpassword"
+        }
+      }
+    },
+    "// Note": "If MCP server runs in Docker, use container names instead of host.docker.internal"
+  },
+  
+  "native": {
+    "// Description": "All services native, databases may be remote",
+    "servers": {
+      "ai-kitchen-br": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["dist/index.js"],
+        "cwd": "/Users/kevintoles/POC/ai-agents-mcp-server",
+        "env": {
+          "PLATFORM_MODE": "native",
+          "AI_AGENTS_URL": "http://localhost:8082",
+          "INFERENCE_SERVICE_URL": "http://localhost:8085",
+          "LLM_GATEWAY_URL": "http://localhost:8080",
+          "LLM_GATEWAY_DEFAULT_MODEL": "gpt-4o",
+          "SEMANTIC_SEARCH_URL": "http://localhost:8081",
+          "CODE_ORCHESTRATOR_URL": "http://localhost:8083",
+          "AUDIT_SERVICE_URL": "http://localhost:8084",
+          "NEO4J_HTTP_URL": "http://localhost:7474",
+          "NEO4J_USER": "neo4j",
+          "NEO4J_PASSWORD": "devpassword"
+        }
+      }
+    },
+    "// Note": "For remote databases, update NEO4J_HTTP_URL to remote server"
+  }
+}

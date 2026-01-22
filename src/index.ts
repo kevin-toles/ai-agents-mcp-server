@@ -498,13 +498,14 @@ async function handleRunProtocol(args: Record<string, unknown>): Promise<unknown
 }
 
 async function handleSemanticSearch(args: Record<string, unknown>): Promise<unknown> {
-  const { query, collection = "all", top_k = 10, threshold = 0.7 } = args as {
+  const { query, collection = "chapters", top_k = 10, threshold = 0.7 } = args as {
     query: string;
     collection?: string;
     top_k?: number;
     threshold?: number;
   };
-  return apiCall("/v1/search", "POST", { query, collection, top_k, threshold }, SEMANTIC_SEARCH_URL);
+  // Map MCP params to semantic-search-service API: top_k -> limit, threshold -> min_score
+  return apiCall("/v1/search", "POST", { query, collection, limit: top_k, min_score: threshold }, SEMANTIC_SEARCH_URL);
 }
 
 async function handleHybridSearch(args: Record<string, unknown>): Promise<unknown> {

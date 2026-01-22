@@ -429,8 +429,9 @@ async function handleRunProtocol(args) {
     return apiCall(`/v1/protocols/${protocol_id}/run`, "POST", { inputs, config, brigade_override });
 }
 async function handleSemanticSearch(args) {
-    const { query, collection = "all", top_k = 10, threshold = 0.7 } = args;
-    return apiCall("/v1/search", "POST", { query, collection, top_k, threshold }, SEMANTIC_SEARCH_URL);
+    const { query, collection = "chapters", top_k = 10, threshold = 0.7 } = args;
+    // Map MCP params to semantic-search-service API: top_k -> limit, threshold -> min_score
+    return apiCall("/v1/search", "POST", { query, collection, limit: top_k, min_score: threshold }, SEMANTIC_SEARCH_URL);
 }
 async function handleHybridSearch(args) {
     const { query, collection = "all", top_k = 10, semantic_weight = 0.7, keyword_weight = 0.3 } = args;
