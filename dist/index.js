@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
 // Service URLs
 const AI_AGENTS_URL = process.env.AI_AGENTS_URL || "http://localhost:8082";
 const INFERENCE_SERVICE_URL = process.env.INFERENCE_SERVICE_URL || "http://localhost:8085";
 const LLM_GATEWAY_URL = process.env.LLM_GATEWAY_URL || "http://localhost:8080";
-const LLM_GATEWAY_DEFAULT_MODEL = process.env.LLM_GATEWAY_DEFAULT_MODEL || "gpt-4o";
+const LLM_GATEWAY_DEFAULT_MODEL = process.env.LLM_GATEWAY_DEFAULT_MODEL || "deepseek-reasoner";
 const SEMANTIC_SEARCH_URL = process.env.SEMANTIC_SEARCH_URL || "http://localhost:8081";
 const CODE_ORCHESTRATOR_URL = process.env.CODE_ORCHESTRATOR_URL || "http://localhost:8083";
 const AUDIT_SERVICE_URL = process.env.AUDIT_SERVICE_URL || "http://localhost:8084";
@@ -165,7 +165,7 @@ async function buildToolsList() {
                             },
                             variance_threshold: {
                                 type: "number",
-                                default: 2.0,
+                                default: 2,
                                 description: "Score variance that triggers discussion (Stage 0.2)",
                             },
                             max_discussion_rounds: {
@@ -241,7 +241,7 @@ async function buildToolsList() {
                     },
                     threshold: {
                         type: "number",
-                        description: "Minimum similarity score 0-1 (default: 0.7)",
+                        description: "Minimum similarity score 0-1 (default: 0.5)",
                     },
                 },
                 required: ["query"],
@@ -422,14 +422,17 @@ async function handleListProtocols() {
 }
 async function handleRunFunction(args) {
     const { function_name, input, preset } = args;
-    return apiCall(`/v1/functions/${function_name}/run`, "POST", { input, preset });
+    // Agent functions can involve LLM calls - use 2 minute timeout
+    return apiCall(`/v1/functions/${function_name}/run`, "POST", { input, preset }, AI_AGENTS_URL, 120000);
 }
 async function handleRunProtocol(args) {
     const { protocol_id, inputs, config, brigade_override } = args;
-    return apiCall(`/v1/protocols/${protocol_id}/run`, "POST", { inputs, config, brigade_override });
+    // Protocols involve multiple LLM calls and can take 2-5 minutes
+    // Use 5 minute timeout (300000ms) instead of default 30s
+    return apiCall(`/v1/protocols/${protocol_id}/run`, "POST", { inputs, config, brigade_override }, AI_AGENTS_URL, 300000);
 }
 async function handleSemanticSearch(args) {
-    const { query, collection = "chapters", top_k = 10, threshold = 0.7 } = args;
+    const { query, collection = "all", top_k = 10, threshold = 0.5 } = args;
     // Map MCP params to semantic-search-service API: top_k -> limit, threshold -> min_score
     return apiCall("/v1/search", "POST", { query, collection, limit: top_k, min_score: threshold }, SEMANTIC_SEARCH_URL);
 }
@@ -593,8 +596,9 @@ async function tryCloudLlm(messages, max_tokens, temperature) {
     }
 }
 // NOTE: handleGraphGetNeighbors removed - cross-reference now includes Neo4j via UnifiedRetriever
-// Main server setup
-const server = new Server({
+// Main server setup using McpServer (high-level API)
+// We access the underlying .server for advanced handler registration
+const mcpServer = new McpServer({
     name: "ai-agents-mcp-server",
     version: "1.0.0",
 }, {
@@ -602,12 +606,12 @@ const server = new Server({
         tools: {},
     },
 });
-// Register handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+// Register handlers using the underlying Server for dynamic tool loading
+mcpServer.server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools = await buildToolsList();
     return { tools };
 });
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+mcpServer.server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
         const result = await executeTool(name, args || {});
@@ -635,6 +639,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 // Start server using top-level await
 const transport = new StdioServerTransport();
-await server.connect(transport);
+await mcpServer.connect(transport);
 console.error("AI Agents MCP Server running on stdio");
 console.error(`Connecting to AI Agents at: ${AI_AGENTS_URL}`);
